@@ -135,7 +135,7 @@ jobs:
 
   publish-image:
     name: Publish scanned image to GHCR
-    needs: build-and-test
+    needs: [build-and-test, kubernetes-test]
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -174,3 +174,90 @@ jobs:
       - name: Log out of GHCR
         if: ${{ always() }}
         run: docker logout ghcr.io
+
+  kubernetes-test:
+    name: Kubernetes deployment and rollback test
+    needs: build-and-test
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Check out Kubernetes manifests
+        uses: actions/checkout@v6
+
+      - name: Download scanned image
+        uses: actions/download-artifact@v4
+        with:
+          name: scanned-image-${{ github.sha }}
+          path: scan
+
+      - name: Install kind and kubectl
+        run: |
+          curl -fsSL -o kind-linux-amd64 https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64
+          curl -fsSL -o kind-linux-amd64.sha256sum https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64.sha256sum
+          sha256sum --check kind-linux-amd64.sha256sum
+          sudo install -m 0755 kind-linux-amd64 /usr/local/bin/kind
+          curl -fsSL -o kubectl https://dl.k8s.io/release/v1.37.0/bin/linux/amd64/kubectl
+          curl -fsSL -o kubectl.sha256 https://dl.k8s.io/release/v1.37.0/bin/linux/amd64/kubectl.sha256
+          printf '%s  kubectl\n' "$(cat kubectl.sha256)" | sha256sum --check
+          sudo install -m 0755 kubectl /usr/local/bin/kubectl
+
+      - name: Create temporary cluster and load scanned image
+        run: |
+          test -f k8s/local.yml
+          kind create cluster --name order-ci --image kindest/node:v1.37.0 --wait 180s
+          docker load --input scan/image.tar
+          docker tag order-management:local order-management:k8s-v1
+          kind load docker-image order-management:k8s-v1 --name order-ci
+
+      - name: Deploy application and PostgreSQL
+        run: |
+          kubectl --context kind-order-ci create namespace order-demo
+          kubectl --context kind-order-ci -n order-demo create secret generic database-password --from-literal=password=ci_kubernetes_password
+          kubectl --context kind-order-ci apply -f k8s/local.yml
+          kubectl --context kind-order-ci -n order-demo rollout status statefulset/postgres --timeout=180s
+          kubectl --context kind-order-ci -n order-demo rollout status deployment/order-app --timeout=240s
+          kubectl --context kind-order-ci -n order-demo exec deployment/order-app -- curl --fail --silent http://order-app:8080/actuator/health
+
+      - name: Verify failed rollout preserves availability and rollback succeeds
+        run: |
+          kubectl --context kind-order-ci -n order-demo set image deployment/order-app app=order-management:missing-demo
+          if kubectl --context kind-order-ci -n order-demo rollout status deployment/order-app --timeout=45s; then
+            echo 'Expected missing-image rollout to fail, but it succeeded'
+            exit 1
+          fi
+          kubectl --context kind-order-ci -n order-demo get pods -o json > pods.json
+          python3 - <<'PY'
+          import json
+          pods = json.load(open('pods.json'))['items']
+          app = [p for p in pods if p['metadata'].get('labels', {}).get('app') == 'order-app']
+          assert any(c.get('state', {}).get('waiting', {}).get('reason') == 'ErrImageNeverPull' for p in app for c in p['status'].get('containerStatuses', [])), 'Missing-image failure was not observed'
+          assert any(c.get('type') == 'Ready' and c.get('status') == 'True' for p in app for c in p['status'].get('conditions', [])), 'Healthy application pod was not preserved'
+          PY
+          kubectl --context kind-order-ci -n order-demo rollout undo deployment/order-app
+          kubectl --context kind-order-ci -n order-demo rollout status deployment/order-app --timeout=180s
+          kubectl --context kind-order-ci -n order-demo exec deployment/order-app -- curl --fail --silent http://order-app:8080/actuator/health
+
+      - name: Collect deployment diagnostics
+        if: ${{ always() }}
+        run: |
+          mkdir -p diagnostics
+          kubectl --context kind-order-ci -n order-demo get pods,pvc -o wide > diagnostics/resources.txt 2>&1 || true
+          kubectl --context kind-order-ci -n order-demo get events --sort-by=.metadata.creationTimestamp > diagnostics/events.txt 2>&1 || true
+          kubectl --context kind-order-ci -n order-demo logs deployment/order-app --tail=100 > diagnostics/app.log 2>&1 || true
+          kind export logs diagnostics/kind --name order-ci || true
+
+      - name: Upload deployment diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: kubernetes-diagnostics-${{ github.run_id }}
+          path: diagnostics/
+          retention-days: 7
+
+      - name: Delete temporary cluster
+        if: ${{ always() }}
+        run: kind delete cluster --name order-ci
