@@ -21,7 +21,7 @@
         <skipITs>true</skipITs>
         <!-- Security fixes within the existing dependency release lines. -->
         <jackson-bom.version>2.21.7</jackson-bom.version>
-        <tomcat.version>10.1.58</tomcat.version>
+        <tomcat.version>10.1.60</tomcat.version>
         <postgresql.version>42.7.12</postgresql.version>
     </properties>
 
