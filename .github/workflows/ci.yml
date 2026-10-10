@@ -1,0 +1,75 @@
+name: Java CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: java-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and test (Java 21 / PostgreSQL 17)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: order_management_test
+          POSTGRES_USER: order_app
+          # Disposable CI-only password, not a development/production credential.
+          POSTGRES_PASSWORD: ci_test_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U order_app -d order_management_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      ORDER_TEST_DB_URL: jdbc:postgresql://localhost:5432/order_management_test
+      ORDER_TEST_DB_USERNAME: order_app
+      ORDER_TEST_DB_PASSWORD: ci_test_password
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Java 21 and Maven cache
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Run ordinary and PostgreSQL integration tests and package JAR
+        run: bash ./mvnw --batch-mode --no-transfer-progress clean verify -Ppostgres-it
+
+      - name: Upload test reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-${{ github.run_id }}
+          path: |
+            target/surefire-reports/
+            target/failsafe-reports/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload executable JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: order-management-${{ github.sha }}
+          path: target/order-management-system-*.jar
+          if-no-files-found: error
+          retention-days: 7
