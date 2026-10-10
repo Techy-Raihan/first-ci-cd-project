@@ -1,0 +1,18 @@
+# Reviewed 2026-10-10. Reassess immediately if view rendering or SSE is added.
+# Full JSON scan runs without this policy so these findings remain visible.
+vulnerabilities:
+  - id: CVE-2026-47884
+    purls:
+      - pkg:maven/org.springframework/spring-webmvc
+    expired_at: 2026-11-10
+    statement: >-
+      Current application uses REST controllers returning JSON. No XsltView,
+      wildcard view-rendering handler, or attacker-controlled view name exists.
+      Advisory: https://spring.io/security/cve-2026-47884/
+  - id: CVE-2026-47890
+    purls:
+      - pkg:maven/org.springframework/spring-webmvc
+    expired_at: 2026-11-10
+    statement: >-
+      Current application does not send view fragments over Server-Sent Events.
+      Advisory: https://spring.io/security/cve-2026-47890/

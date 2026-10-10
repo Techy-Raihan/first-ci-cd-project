@@ -100,8 +100,10 @@ jobs:
         run: |
           docker run --rm \
             -v "$PWD/scan:/scan" \
+            -v "$PWD/.trivyignore.yaml:/policy/.trivyignore.yaml:ro" \
             aquasec/trivy:0.75.0 image \
             --input /scan/image.tar --scanners vuln \
+            --ignorefile /policy/.trivyignore.yaml \
             --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1
 
       - name: Upload vulnerability report
