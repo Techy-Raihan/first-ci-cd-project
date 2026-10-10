@@ -40,6 +40,7 @@ jobs:
       ORDER_TEST_DB_URL: jdbc:postgresql://localhost:5432/order_management_test
       ORDER_TEST_DB_USERNAME: order_app
       ORDER_TEST_DB_PASSWORD: ci_test_password
+      COMPOSE_DB_PASSWORD: ci_container_password
 
     steps:
       - name: Check out source
@@ -73,3 +74,49 @@ jobs:
           path: target/order-management-system-*.jar
           if-no-files-found: error
           retention-days: 7
+
+      - name: Build Docker image
+        run: docker compose -p ci build --pull app
+
+      - name: Check container startup and application health
+        run: |
+          docker compose -p ci up --no-build -d --wait --wait-timeout 180
+          curl --fail --silent --show-error http://localhost:8080/actuator/health
+
+      - name: Export image for scanning
+        run: |
+          mkdir -p scan
+          docker save order-management:local -o scan/image.tar
+
+      - name: Scan image and save full vulnerability report
+        run: |
+          docker run --rm \
+            -v "$PWD/scan:/scan" \
+            aquasec/trivy:0.75.0 image \
+            --input /scan/image.tar --scanners vuln \
+            --format json --output /scan/trivy-report.json --exit-code 0
+
+      - name: Fail on fixable high or critical vulnerabilities
+        run: |
+          docker run --rm \
+            -v "$PWD/scan:/scan" \
+            aquasec/trivy:0.75.0 image \
+            --input /scan/image.tar --scanners vuln \
+            --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1
+
+      - name: Upload vulnerability report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report-${{ github.run_id }}
+          path: scan/trivy-report.json
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Show container logs
+        if: ${{ always() }}
+        run: docker compose -p ci logs --no-color --tail=100
+
+      - name: Stop CI containers
+        if: ${{ always() }}
+        run: docker compose -p ci down
