@@ -1,0 +1,52 @@
+spring:
+  application:
+    name: order-management-system
+  datasource:
+    url: ${ORDER_DB_URL:jdbc:postgresql://localhost:5432/order_management}
+    username: ${ORDER_DB_USERNAME:order_app}
+    password: ${ORDER_DB_PASSWORD:change_me}
+    hikari:
+      maximum-pool-size: 5
+      minimum-idle: 1
+      connection-timeout: 10000
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+        order_inserts: true
+        order_updates: true
+  flyway:
+    enabled: true
+    clean-disabled: true
+  jackson:
+    time-zone: UTC
+    default-property-inclusion: non_null
+
+server:
+  error:
+    include-message: never
+    include-stacktrace: never
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: method
+    tags-sorter: alpha
+
+logging:
+  level:
+    root: INFO
+    com.example.orders: INFO

@@ -1,0 +1,87 @@
+@baseUrl = http://localhost:8080/api/v1
+@customerId = 1
+@productId1 = 1
+@productId2 = 2
+@orderId = 1
+
+### Health
+GET http://localhost:8080/actuator/health
+
+### Create customer
+POST {{baseUrl}}/customers
+Content-Type: application/json
+
+{
+  "name": "Ravi Kumar",
+  "email": "ravi@example.com",
+  "phone": "+91 98765 43210",
+  "deliveryAddress": "12 Park Road, Pune, Maharashtra 411001"
+}
+
+### Create product 1
+POST {{baseUrl}}/products
+Content-Type: application/json
+
+{
+  "sku": "KEY-100",
+  "name": "Mechanical Keyboard",
+  "description": "Quiet switches",
+  "price": 4999.00,
+  "stockQuantity": 10
+}
+
+### Create product 2
+POST {{baseUrl}}/products
+Content-Type: application/json
+
+{
+  "sku": "MOUSE-100",
+  "name": "Wireless Mouse",
+  "description": "USB-C charging",
+  "price": 1999.00,
+  "stockQuantity": 20
+}
+
+### Search products with bounded pagination
+GET {{baseUrl}}/products?search=key&page=0&size=20&sort=name&direction=asc
+
+### Place order - duplicate product IDs are rejected
+POST {{baseUrl}}/orders
+Content-Type: application/json
+
+{
+  "customerId": {{customerId}},
+  "items": [
+    { "productId": {{productId1}}, "quantity": 1 },
+    { "productId": {{productId2}}, "quantity": 2 }
+  ]
+}
+
+### Get order details
+GET {{baseUrl}}/orders/{{orderId}}
+
+### List customer orders by status
+GET {{baseUrl}}/orders?customerId={{customerId}}&status=CREATED&page=0&size=20&sort=createdAt&direction=desc
+
+### Confirm
+POST {{baseUrl}}/orders/{{orderId}}/confirm
+
+### Ship
+POST {{baseUrl}}/orders/{{orderId}}/ship
+
+### Deliver
+POST {{baseUrl}}/orders/{{orderId}}/deliver
+
+### Cancel a different CREATED or CONFIRMED order
+POST {{baseUrl}}/orders/{{orderId}}/cancel
+
+### Validation error example
+POST {{baseUrl}}/products
+Content-Type: application/json
+
+{
+  "sku": "",
+  "name": "",
+  "price": 0,
+  "stockQuantity": -1
+}

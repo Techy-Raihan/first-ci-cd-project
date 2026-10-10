@@ -1,0 +1,13 @@
+spring:
+  datasource:
+    url: ${ORDER_TEST_DB_URL:jdbc:postgresql://localhost:5432/order_management_test}
+    username: ${ORDER_TEST_DB_USERNAME:order_app}
+    password: ${ORDER_TEST_DB_PASSWORD:change_me}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+  flyway:
+    clean-disabled: true
+app:
+  seed:
+    enabled: false
