@@ -1,0 +1,37 @@
+name: order-management
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: order_management
+      POSTGRES_USER: order_app
+      POSTGRES_PASSWORD: ${COMPOSE_DB_PASSWORD:?Set COMPOSE_DB_PASSWORD in PowerShell}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U order_app -d order_management"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  app:
+    build:
+      context: .
+    image: order-management:local
+    environment:
+      ORDER_DB_URL: jdbc:postgresql://postgres:5432/order_management
+      ORDER_DB_USERNAME: order_app
+      ORDER_DB_PASSWORD: ${COMPOSE_DB_PASSWORD:?Set COMPOSE_DB_PASSWORD in PowerShell}
+      SPRING_PROFILES_ACTIVE: dev
+    ports:
+      - "127.0.0.1:8080:8080"
+    mem_limit: 768m
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

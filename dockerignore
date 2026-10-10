@@ -1,0 +1,4 @@
+**
+!target/
+!target/order-management-system-*.jar
+!Dockerfile
