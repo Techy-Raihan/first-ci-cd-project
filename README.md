@@ -1,8 +1,159 @@
 # Order Management System
 
-A modular Spring Boot application for learning backend development and for later use in a DevOps portfolio. It manages products, customers, stock, and the full order lifecycle.
+A Java 21 / Spring Boot order management API with a working DevOps pipeline: PostgreSQL integration tests, Docker health checks, Trivy vulnerability scanning, automated Kubernetes deployment and rollback verification, and versioned image publishing to GitHub Container Registry.
+
+It manages products, customers, stock, and the full order lifecycle.
 
 > **Local learning project:** there is no authentication or authorization. Do not expose this application directly to the internet or use real customer data.
+
+## DevOps pipeline
+
+Workflow: [`.github/workflows/ci.yml`](.github/workflows/ci.yml). Check runs and downloadable artifacts in [GitHub Actions](https://github.com/Techy-Raihan/first-ci-cd-project/actions).
+
+```mermaid
+flowchart TD
+  A[Push to main] --> B[Tests, Docker health check and Trivy]
+  B --> C[Temporary Kubernetes cluster]
+  C --> D[Deployment and failed rollout verification]
+  D --> E[Publish tested image to GHCR]
+```
+
+| Job | Verification |
+| --- | --- |
+| `build-and-test` | Java 21 build, ordinary tests, real PostgreSQL 17 integration tests, Docker Compose startup, health endpoint, and vulnerability gate |
+| `kubernetes-test` | Loads the scanned image into kind, deploys PostgreSQL and the API, checks health, introduces a missing image, verifies a healthy pod remains available, then rolls back |
+| `publish-image` | Publishes the same tested image after both preceding jobs pass, using the workflow's `GITHUB_TOKEN` |
+
+Pull requests run the build/test/security job. Kubernetes verification and publishing run on pushes to `main`. A manual workflow dispatch runs the build/test/security job only. The temporary CI cluster is deleted after the run and does not update the laptop cluster.
+
+Published image tags:
+
+```text
+ghcr.io/techy-raihan/first-ci-cd-project:latest
+ghcr.io/techy-raihan/first-ci-cd-project:sha-<full-commit-sha>
+```
+
+Use a commit tag to reproduce a particular build; `latest` changes after successful main-branch pushes. Private packages require Docker authentication before pulling.
+
+Artifacts include test reports, the executable JAR, the full Trivy JSON report, Kubernetes diagnostics, and a short-lived image archive. Reports are retained for seven days and the image archive for one day.
+
+## Run with Docker Compose
+
+Start Docker Desktop in Linux-container mode. Run these commands from the repository directory, with Java 21 available:
+
+```powershell
+$env:COMPOSE_DB_PASSWORD = 'replace_with_a_local_demo_password'
+.\mvnw.cmd clean verify
+docker compose up --build -d --wait --wait-timeout 180
+docker compose ps
+Invoke-RestMethod http://localhost:8080/actuator/health
+```
+
+The Dockerfile packages an already-built JAR, so run Maven before rebuilding the image after Java changes. The application runs as a non-root user with a 384 MB maximum Java heap. Compose limits application memory to 768 MB and PostgreSQL to 256 MB.
+
+Open [Swagger UI](http://localhost:8080/swagger-ui.html). PostgreSQL is reachable by the application on the Compose network; its database port is not published to Windows.
+
+Stop the stack using the same PowerShell session:
+
+```powershell
+docker compose down
+```
+
+In a new terminal, set `COMPOSE_DB_PASSWORD` again before using Compose, including `down`. The named volume preserves database data when containers stop. Reuse the original password for an existing database volume; changing the environment variable does not change its database password.
+
+## Run on local Kubernetes with kind
+
+Prerequisites: running Docker Desktop, `kind`, and `kubectl`. This setup uses one kind node and one application replica to fit a small learning environment. Stop Compose first to free resources and port 8080.
+
+```powershell
+$env:COMPOSE_DB_PASSWORD = 'replace_with_a_local_demo_password'
+docker compose down
+kind create cluster --name order-dev --image kindest/node:v1.37.0 --wait 180s
+kubectl --context kind-order-dev get nodes
+
+docker pull ghcr.io/techy-raihan/first-ci-cd-project:latest
+docker tag ghcr.io/techy-raihan/first-ci-cd-project:latest order-management:k8s-v1
+kind load docker-image order-management:k8s-v1 --name order-dev
+
+kubectl --context kind-order-dev create namespace order-demo
+kubectl --context kind-order-dev -n order-demo create secret generic database-password --from-literal=password=replace_with_a_local_demo_password
+kubectl --context kind-order-dev apply -f .\k8s\local.yml
+kubectl --context kind-order-dev -n order-demo rollout status statefulset/postgres --timeout=180s
+kubectl --context kind-order-dev -n order-demo rollout status deployment/order-app --timeout=240s
+kubectl --context kind-order-dev -n order-demo get pods,pvc
+```
+
+Cluster, namespace, and secret creation commands are for the first setup; skip them when those resources already exist. Keep the secret password consistent with any existing PostgreSQL data. The local image has `imagePullPolicy: Never`, so loading it into kind is required.
+
+[`k8s/local.yml`](k8s/local.yml) defines the application Deployment and Service, a PostgreSQL StatefulSet and headless Service, and a 1 GiB persistent volume claim. The application uses startup, readiness, and liveness probes, resource limits, a non-root security context, and a database password supplied through a Kubernetes Secret. Secret values are created separately from the manifest.
+
+Keep port forwarding running in one PowerShell window:
+
+```powershell
+kubectl --context kind-order-dev -n order-demo port-forward service/order-app 8080:8080
+```
+
+In a second window:
+
+```powershell
+Invoke-RestMethod http://localhost:8080/actuator/health
+```
+
+Expected health status: `UP`. Port forwarding stays in the foreground until Ctrl+C. If port 8080 is occupied, stop the existing application/forwarding process or forward `8081:8080` and visit `http://localhost:8081`.
+
+## Demonstrate recovery and rollback
+
+To demonstrate pod replacement:
+
+```powershell
+kubectl --context kind-order-dev -n order-demo delete pod -l app=order-app
+kubectl --context kind-order-dev -n order-demo get pods -w
+```
+
+Wait for the replacement application pod to become `1/1 Running`, then press Ctrl+C to stop watching. A single-replica pod deletion can temporarily interrupt requests; restart port forwarding if its selected pod was deleted.
+
+To demonstrate a failed rollout:
+
+```powershell
+kubectl --context kind-order-dev -n order-demo set image deployment/order-app app=order-management:missing-demo
+kubectl --context kind-order-dev -n order-demo get pods
+```
+
+The new pod reports `ErrImageNeverPull`. The existing healthy pod stays available because the rolling update uses `maxUnavailable: 0` and `maxSurge: 1`.
+
+Restore the working revision and reconcile it with the manifest:
+
+```powershell
+kubectl --context kind-order-dev -n order-demo rollout undo deployment/order-app
+kubectl --context kind-order-dev -n order-demo rollout status deployment/order-app --timeout=180s
+kubectl --context kind-order-dev apply -f .\k8s\local.yml
+Invoke-RestMethod http://localhost:8080/actuator/health
+```
+
+The CI Kubernetes job automates the missing-image failure and rollback checks. Pod deletion/replacement was also demonstrated locally.
+
+## Security scan policy
+
+Trivy scans the built image. The gate blocks fixable HIGH and CRITICAL findings except the reviewed entries in [`.trivyignore.yaml`](.trivyignore.yaml). Unfixed findings do not fail this gate. The full JSON report is generated without this exception policy so findings remain visible; a green pipeline does not mean zero vulnerabilities.
+
+| Exception | Current application scope | Expiry |
+| --- | --- | --- |
+| [CVE-2026-47884](https://spring.io/security/cve-2026-47884/) | REST JSON controllers; no XsltView or wildcard view-rendering handler | 2026-11-10 |
+| [CVE-2026-47890](https://spring.io/security/cve-2026-47890/) | No Server-Sent Events view-fragment rendering | 2026-11-10 |
+
+Reassess these exceptions before expiry or immediately if rendering or SSE features are added. Dependency versions and the base-image packages have been updated to address other findings observed during setup.
+
+## Verified project milestones
+
+- Ordinary and PostgreSQL integration tests passed locally on Windows with Java 21.
+- Docker Compose application and database health checks passed.
+- Local kind deployment reached ready status and `/actuator/health` returned `UP`.
+- Pod replacement and failed-image rollback were demonstrated locally.
+- All three GitHub Actions jobs passed for commit `d438bed`: build/security, Kubernetes verification, and GHCR publishing.
+
+## Resume example
+
+Built a GitHub Actions pipeline for a Java Spring Boot and PostgreSQL application with integration tests, Docker health checks, Trivy vulnerability scanning, automated Kubernetes deployment and rollback verification, and commit-versioned image publishing to GHCR.
 
 ## Technology versions
 
@@ -244,18 +395,6 @@ Open `requests/order-management.http` in IntelliJ IDEA or a VS Code REST Client 
 - Product updates set absolute stock. A later inventory feature should record stock movements instead.
 - No order search by date range, reporting, returns, partial fulfilment, or soft deletion of customers.
 - The API returns Spring Data's page JSON shape. A stable custom page DTO can be added if this becomes a public contract.
-- CI/CD, Docker, Kubernetes, Jenkins, GitHub Actions, Terraform, and cloud deployment are deliberately deferred to the next phase.
+- Kubernetes deployment is verified in a temporary CI cluster. Deployment to the local laptop remains manual; no persistent cloud deployment is configured.
+- PostgreSQL runs as a single instance. Its volume provides persistence within the cluster, not database backups or high availability.
 
-## Ready-for-CI/CD checklist
-
-- [ ] `java -version` reports Java 21.
-- [ ] `.\mvnw.cmd test` passes without PostgreSQL.
-- [ ] `.\mvnw.cmd clean package` creates the executable JAR.
-- [ ] PostgreSQL development and `_test` databases are separate.
-- [ ] `.\mvnw.cmd verify -Ppostgres-it` passes against the `_test` database.
-- [ ] Application starts and Flyway reports migration success.
-- [ ] `/actuator/health` returns `{"status":"UP"}`.
-- [ ] Swagger UI opens and the customer/product/order flow succeeds.
-- [ ] A cancelled order restores stock once; a repeated cancellation returns 409.
-- [ ] Concurrent integration test proves two orders cannot oversell five units.
-- [ ] No real secrets or `.env` file are committed.
